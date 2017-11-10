@@ -1,0 +1,111 @@
+const puppeteer = require('puppeteer');
+const elements = require('./elements');
+const save = require('./save');
+
+module.exports = {
+    run: async () => {
+
+        // Open Chrome
+        const browser = await puppeteer.launch({
+            headless: false
+        });
+
+        // Create a new tab
+        const page = await browser.newPage();
+        
+        // Navigate to specified URL
+        await page.goto('https://sports.ladbrokes.com/en-gb/');
+        
+        // Click on "Football" menu item
+        await elements.elementClick(page, '#header > div > nav.main-menu > div.outer-items > div > a:nth-child(3) > div');
+
+        // Click on "English"
+        await elements.elementClick(page, '#content > div > div > header > div.competition > tabs > nav > ul > li:nth-child(1)');
+
+        // Click on "Premier League"
+        await elements.elementClick(page, '#content > div > div > header > div.competition > tabs > div > a:nth-child(1)');
+
+        // There is an element in the markup with "class='event-group'. Grab that, as it is the
+        // container of a list of "Match Date" elements. The helper 'getElementArrayLength'
+        // returns the number of match dates.
+        const numberOfMatchDays = await elements.getElementArrayLength(page, 'event-group');
+
+        // Each match date i the list has the same path, apart from the "INDEX". Declare a template
+        // of the selector, INDEX will be replaced as we loop through the items.
+        const matchDateSelectorTemplate = '#content > div > div > div > div.left-column > div.module > div > event-group-simple > div > div:nth-child(INDEX) > h2 > div.title';
+
+        // Loop from the first index to the number of items identified above (numberOfMatchDays)
+        for (let matchDay = 0; matchDay <= numberOfMatchDays; matchDay++) {
+
+            // Replace the INDEX placeholder with this loop counter
+            const matchDateSelector = matchDateSelectorTemplate.replace("INDEX", matchDay);
+
+            // Use the selector to get the contents of the date header. Stored in 'matchDate' for later
+            const matchDate = await elements.getElementContents(page, matchDateSelector);
+
+            // Similar principle as above. DAYINDEX is the outer loop counter, and below we will iterate each
+            // actual match, replacing MATCHINDEX as we go
+            const matchSelectorTemplate = '#content > div > div > div > div.left-column > div.module > div > event-group-simple > div > div:nth-child(DAYINDEX) > event-list:nth-child(MATCHINDEX)';
+
+            for (let i = 2; i <= 11; i++) {
+
+                // Replace the placeholders with relevent indices
+                const matchSelector = matchSelectorTemplate.replace("DAYINDEX", matchDay).replace("MATCHINDEX", i);
+
+                // Narrow down the selection by appending more specificity. So, for this match get the first div then get the first span within it
+                const timeSelector = matchSelector + " > div > span";
+
+                // Use the selector to get hold of the element, and use the helper 'getElementContents'
+                // to return the time of the match and store in 'matchTime' for use later
+                const matchTime = await elements.getElementContents(page, timeSelector);
+
+                // If matchTime comes back as null, there has generally been a problem. If a game has started, the page format changes and LIVE is
+                // put in the time element. If this occurs, skip the match as it is no longer relevant
+                if (matchTime == null || matchTime === "LIVE")
+                {
+                    console.log("No match time found, or game is live. Date: " + matchDate + ", Game Number " + (i - 1));
+                    break; // Moves onto next item in loop
+                }
+
+                // Repeat what was done for the time, but for the teams playing.
+                // Teams come back as 'TEAMA <b>v</b> TEAMB' so theres some formatting later to split that out
+                const teamSelector = matchSelector + " > div > div.event-list-details > div > div";
+
+                const matchTeams = await elements.getElementContents(page, teamSelector);
+
+                const match = {
+                    bookmakerId: 1, // Ladbrokes is 1, each bookie file needs the ID for that bookie putting here.
+                    matchDate, // Retrieved above
+                    matchTime, // Retrieved above
+                    homeTeam: matchTeams.split(" <b>v</b> ")[0], // Split by the seperator and take first item - TEAMA
+                    awayTeam: matchTeams.split(" <b>v</b> ")[1], // Split by the seperator and take second item - TEAMB
+                    odds: [3] // Empty placerholder for odds, to be filled in below.
+                };
+
+                // Get odds element contents.
+                const oddsListSelector = matchSelector + " > div > div.selections > div:nth-child(INDEX) > selection-button > div > div > span > span";
+
+                // There are always 3 odds items: Home, Draw & Away
+                for (j = 1; j <= 3; j++)
+                {
+                    const oddsSelector = oddsListSelector.replace("INDEX", j);
+
+                    const matchOdds = await elements.getElementContents(page, oddsSelector);
+
+                    // -1 because arrays always stasrt their indices at 0
+                    match.odds[j - 1] = matchOdds;
+                }
+
+                try {
+                    // Save the data to the database, and log the saved match to the console (only for debugging purposes)
+                    var savedMatch = await save.save(match);
+                    console.log("Added " + JSON.stringify(savedMatch));
+                } catch (ex) {
+                    console.log("Error saving match: " + JSON.stringify(match));
+                }
+            }
+        }
+
+        browser.close();
+    }
+}
